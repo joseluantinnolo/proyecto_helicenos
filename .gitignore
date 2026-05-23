@@ -1,0 +1,7 @@
+# Ignorar datos originales y procesados para no saturar GitHub
+data/raw/*
+data/processed/*
+
+# Excepción: Puedes crear un pequeño CSV de muestra (ej. 10 filas) 
+# y llamarlo sample.csv si quieres que quede en el repo como ejemplo.
+!data/raw/sample.csv
