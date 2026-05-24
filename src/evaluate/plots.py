@@ -85,7 +85,7 @@ class ScientificPlotter:
     # 2. COMPARATIVA MULTIMODELO EN UNA MOLÉCULA
     # =====================================================================
     def plot_comparativa_modelos_espectro(self, wl_nm: np.ndarray, y_real: np.ndarray, 
-                                          dict_preds: dict, mol_idx: int = 0):
+                                          dict_preds: dict, nombre_mision: str, mol_idx: int = 0):
         """
         Superpone las predicciones de varios modelos (End-to-End, PINN, etc.) 
         contra la curva real (Ground Truth).
@@ -108,7 +108,7 @@ class ScientificPlotter:
         plt.grid(True, alpha=0.3)
         plt.legend()
         
-        ruta = self._get_path("G2_Comparativa_Multimodelo", f"Mol_{mol_idx}")
+        ruta = self._get_path("G2_Comparativa", nombre_mision, f"Mol_{mol_idx}")
         plt.savefig(ruta)
         plt.close()
         print(f"✅ Comparativa multimodelo guardada: {ruta}")
