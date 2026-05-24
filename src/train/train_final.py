@@ -10,7 +10,7 @@ import os
 import torch
 import numpy as np
 
-from src.models.architectures import SpectraPredictorNN
+from src.models.architectures import DynamicPINN
 from src.train.engine import train_pinn_model
 from src.data.dataloaders import CDDatasetPipeline
 
@@ -63,20 +63,15 @@ def entrenar_modelo_definitivo(
     input_dim = X_raw.shape[1]
     output_dim = Y_target.shape[1]
     
-    # 3. Construcción Dinámica de la Topología de la Red Neuronal (MLP)
-    hidden_layers = []
+# 3. Construcción Dinámica de la Topología de la Red Neuronal
     n_layers = best_params.get("n_layers", 3)
-    for i in range(n_layers):
-        hidden_layers.append(best_params.get(f"layer_{i}_size", 256))
         
-    model = SpectraPredictorNN(
+    model = DynamicPINN(
         input_dim=input_dim, 
         output_dim=output_dim, 
-        hidden_layers=hidden_layers,
-        dropout_rate=best_params.get("dropout_rate", 0.2),
-        use_batchnorm=best_params.get("use_batchnorm", True)
+        n_layers=n_layers,
+        **{f"layer_{i}_size": best_params.get(f"layer_{i}_size", 256) for i in range(n_layers)}
     ).to(device_obj)
-    
     # 4. INSTANCIACIÓN DINÁMICA UNIVERSAL DE LA FUNCIÓN DE PÉRDIDA
     # Al usar **criterion_kwargs, Python desempaqueta automáticamente los argumentos
     # correctos para PINNLoss, EndToEndLoss o cualquier otra clase sin romper el código.

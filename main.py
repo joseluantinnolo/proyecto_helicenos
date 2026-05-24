@@ -25,17 +25,17 @@ from src.evaluate.tables import LaTeXTableGenerator
 # PANEL DE CONTROL (Configuración de la Ejecución)
 # =====================================================================
 CONFIG = {
-    # MODO DE EJECUCIÓN: "PREPROCESAR", "OPTIMIZAR", "KFOLD", "ENTRENAR_FINAL", "EVALUAR", "PIPELINE_COMPLETO"
-    "MODO": "EVALUAR", 
+    # MODO DE EJECUCIÓN: "PREPROCESAR", "OPTIMIZAR", "KFOLD", "ENTRENAR_FINAL", "EVALUAR", "PIPELINE_COMPLETO", "BARRIDO_ALPHA"
+    "MODO": "BARRIDO_ALPHA",  
     
     # ARQUITECTURA OBJETIVO (Para entrenar): "PINN_10G", "PINN_8G", "PINN_3T", "CAJA_NEGRA"
-    "ARQUITECTURA": "PINN_8G",
+    "ARQUITECTURA": "PINN_10G",
     
     # METODO DE EXTRACCIÓN (Solo aplica si no es Caja Negra ni 3T)
     # Opciones: "gmm", "agglomerative", "leastsquares", "pca"
     "METODO": "leastsquares",
     
-    "MODELO_NOMBRE": "PINN_LeastSquares_8G_Definitivo",
+    "MODELO_NOMBRE": "PINN_LeastSquares_10G_Definitivo",
     "DEVICE": "cuda" if torch.cuda.is_available() else "cpu",
     "N_TRIALS_OPTUNA": 15,
     "MALLA_PUNTOS": 100,
@@ -46,8 +46,8 @@ CONFIG = {
     "COMPARATIVAS": [
         # (Ground Truth, "Nombre_de_la_Mision", ["Modelo_A", "Modelo_B"])
         ("3T",   "Modelos_3_Transiciones",    ["PINN_3T_Final", "Caja_Negra_3T"]),
-        ("100T", "Modelos_100_Transiciones",  ["PINN_LeastSquares_8G_Definitivo", "Caja_Negra_100T"]),
-        ("100T", "Estudio_Cruzado_Arquitecturas",  ["PINN_3T_Final", "PINN_LeastSquares_8G_Definitivo"])
+        ("100T", "Modelos_100_Transiciones",  ["PINN_LeastSquares_10G_Definitivo", "Caja_Negra_100T"]),
+        ("100T", "Estudio_Cruzado_Arquitecturas",  ["PINN_3T_Final", "PINN_LeastSquares_10G_Definitivo"])
     ]
 }
 
@@ -91,7 +91,7 @@ def main():
     # =====================================================================
     # FASE 1: PREPROCESAMIENTO Y DATALOADERS
     # =====================================================================
-    if CONFIG["MODO"] in ["PREPROCESAR", "OPTIMIZAR", "KFOLD", "ENTRENAR_FINAL", "PIPELINE_COMPLETO", "EVALUAR"]:
+    if CONFIG["MODO"] in ["PREPROCESAR", "OPTIMIZAR", "KFOLD", "ENTRENAR_FINAL", "PIPELINE_COMPLETO", "BARRIDO_ALPHA", "EVALUAR"]:
         pipeline = CDDatasetPipeline(data_dir="data", batch_size=32)
         
         if CONFIG["MODO"] != "EVALUAR":
@@ -120,6 +120,22 @@ def main():
                 
         if CONFIG["MODO"] == "PREPROCESAR": return
 
+# =====================================================================
+#  # FASE EXTRA: ANÁLISIS DEL PESO DE LA PÉRDIDA (SWEEP ALPHA)
+# =====================================================================
+    if CONFIG["MODO"] == "BARRIDO_ALPHA":
+        from src.train.sweep_alpha import ejecutar_barrido_alpha
+        
+        # Construimos un loader estándar (80% Train, 20% Val)
+        tr_loader, va_loader = pipeline.construir_loaders(X_raw, Y_target, S_true, split_ratio=0.8)
+        
+        ejecutar_barrido_alpha(
+            train_loader=tr_loader, val_loader=va_loader, 
+            wl_grid=wl_grid, input_dim=X_raw.shape[1], output_dim=Y_target.shape[1],
+            criterion_class=CriterionClass, criterion_kwargs_base=criterion_kwargs,
+            device_str=CONFIG['DEVICE']
+        )
+        return 
     # =====================================================================
     # FASE 2: OPTIMIZACIÓN BAYESIANA (OPTUNA)
     # =====================================================================

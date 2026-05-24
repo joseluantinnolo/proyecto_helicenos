@@ -67,7 +67,7 @@ class LeastSquaresExtractor(BaseExtractor):
     """
     Motor Atómico Físico. 
     Ajusta 3 gaussianas ancla y N gaussianas libres (5 para el Modelo 8G, 7 para el 10G)
-    distribuidas en zonas estancas con semillas optimizadas (Modelo 2).
+    distribuidas en zonas estancas estrictas derivadas del análisis físico.
     """
     def __init__(self, n_gaussianas=10, Omega_lambda=16.7, Omega_A=100.0, n_jobs=14):
         super().__init__(n_jobs)
@@ -136,25 +136,24 @@ class LeastSquaresExtractor(BaseExtractor):
         res_3 = least_squares(self.error_3, x0=x0_3, bounds=(b_lower_3, b_upper_3), args=(wl_nm, y_real), max_nfev=2500)
         popt_3 = res_3.x
             
-        # --- CAPA 2: Matching Pursuit Estadístico (Zonas Dinámicas) ---
+        # --- CAPA 2: Zonas Dinámicas (Matching Pursuit Estadístico) ---
         y_parcial_3 = self.suma_3_gaussianas(wl_nm, *popt_3)
         y_residuo = y_real - y_parcial_3
         A_max_permitido = max([abs(popt_3[0]), abs(popt_3[3]), abs(popt_3[6])])
         
-        # Selección de Modelo (Zonas y Funciones de Error)
         if self.n_gaussianas == 8:
-            # MODELO 2: Semillas y Límites optimizados (5 zonas libres, sin solapamiento)
+            # 8 GAUSSIANAS (5 Libres): La Región 1 colapsa las primeras 3 zonas del modelo de 10.
             zonas = [
-                {"mu_start": 185.0, "mu_min": 150.0, "mu_max": 215.0},
-                {"mu_start": 235.0, "mu_min": 215.1, "mu_max": 275.0},
-                {"mu_start": 305.0, "mu_min": 275.1, "mu_max": 340.0},
-                {"mu_start": 375.0, "mu_min": 340.1, "mu_max": 430.0},
-                {"mu_start": 485.0, "mu_min": 430.1, "mu_max": 650.0}
+                {"mu_start": 195.2, "mu_min": 150.0, "mu_max": 239.9}, # Unión zonas 1, 2 y 3 (10G)
+                {"mu_start": 270.0, "mu_min": 240.0, "mu_max": 289.9}, # Idéntica a zona 4 (10G)
+                {"mu_start": 308.0, "mu_min": 290.0, "mu_max": 324.9}, # Idéntica a zona 5 (10G)
+                {"mu_start": 335.0, "mu_min": 325.0, "mu_max": 369.9}, # Idéntica a zona 6 (10G)
+                {"mu_start": 405.0, "mu_min": 370.0, "mu_max": 650.0}  # Idéntica a zona 7 (10G)
             ]
             error_func_libre = self.error_5
             error_func_global = self.error_8
         else:
-            # MODELO V2.5: 7 zonas libres para 10 gaussianas
+            # 10 GAUSSIANAS (7 Libres): Alta resolución en UV lejano.
             zonas = [
                 {"mu_start": 177.4, "mu_min": 150.0, "mu_max": 182.9},
                 {"mu_start": 195.2, "mu_min": 183.0, "mu_max": 211.9},
@@ -216,6 +215,8 @@ class LeastSquaresExtractor(BaseExtractor):
         print(f"🚀 Iniciando Least Squares (K={self.n_gaussianas}) en {self.n_jobs} núcleos ({N_mols} moléculas)...")
         tareas = [(idx, S_real_matrix[idx], puros_9_params_matrix[idx], wl_nm) for idx in range(N_mols)]
         
+        # Joblib paralelo para procesar rápido
+        from joblib import Parallel, delayed
         resultados = Parallel(n_jobs=self.n_jobs, verbose=5)(
             delayed(self._procesar_molecula)(tarea) for tarea in tareas
         )

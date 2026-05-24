@@ -13,7 +13,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from scipy.spatial.distance import cosine
 from scipy.integrate import trapezoid
 
-from src.models.architectures import SpectraPredictorNN
+from src.models.architectures import DynamicPINN
 from src.data.dataloaders import CDDatasetPipeline
 from src.evaluate.plots import ScientificPlotter
 from src.evaluate.tables import LaTeXTableGenerator
@@ -39,9 +39,7 @@ def ejecutar_evaluacion_comparativa(comparativas_config: list, X_raw: np.ndarray
     evaluador_dominio = DomainEvaluator(X_data=X_raw, wl_nm=wl_grid)
 
     for mision in comparativas_config:
-        nombre_mision = mision["nombre"]
-        lista_modelos = mision["modelos"]
-        gt_tipo = mision["ground_truth"]
+        gt_tipo, nombre_mision, lista_modelos = mision
         
         print(f"\n🚀 EJECUTANDO MISIÓN: {nombre_mision} | Árbitro (Ground Truth): {gt_tipo}")
         
@@ -65,7 +63,7 @@ def ejecutar_evaluacion_comparativa(comparativas_config: list, X_raw: np.ndarray
             pesos_salida = checkpoint[list(checkpoint.keys())[-1]]
             output_dim = pesos_salida.shape[0]
             
-            model = SpectraPredictorNN(input_dim=X_raw.shape[1], output_dim=output_dim, hidden_layers=[256, 512, 256]).to(device_obj)
+            model = DynamicPINN(input_dim=X_raw.shape[1], output_dim=output_dim, hidden_layers=[256, 512, 256]).to(device_obj)
             model.load_state_dict(checkpoint)
             model.eval()
             
@@ -86,8 +84,11 @@ def ejecutar_evaluacion_comparativa(comparativas_config: list, X_raw: np.ndarray
                     p = y_pred_fisico[idx]
                     if output_dim == 24: curva = LeastSquaresExtractor.suma_8_gaussianas(wl_grid, *p)
                     elif output_dim == 30: curva = LeastSquaresExtractor.suma_10_gaussianas(wl_grid, *p)
-                    elif output_dim == 6: # Fase A (3T): solo [A, mu], asumimos sigma constante temporal
-                        curva = sum(LeastSquaresExtractor.gaussiana(wl_grid, p[i], p[i+1], 20.0) for i in range(0, 6, 2))
+                    elif output_dim == 6: # Fase A (3T): [A, mu], calculamos sigma dinámicamente según la física
+                        curva = sum(
+                        LeastSquaresExtractor.gaussiana(wl_grid, p[i], p[i+1], ((p[i+1]**2) / 1240.0) * 0.2 + 1e-5) 
+                        for i in range(0, 6, 2)
+                        )
                     else: curva = np.zeros(100)
                     espectros_pinn.append(curva)
                 y_pred_fisico = np.array(espectros_pinn)

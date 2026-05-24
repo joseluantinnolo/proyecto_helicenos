@@ -10,7 +10,7 @@ from sklearn.model_selection import KFold
 from torch.utils.data import TensorDataset, DataLoader
 
 # Importamos nuestras herramientas internas
-from src.models.architectures import SpectraPredictorNN
+from src.models.architectures import DynamicPINN
 from src.train.engine import train_pinn_model
 
 def run_kfold_cv(
@@ -59,7 +59,7 @@ def run_kfold_cv(
         output_dim = Y_scaled.shape[1]
         
         # Arquitectura estándar (se puede parametrizar más adelante con Optuna)
-        model = SpectraPredictorNN(input_dim=input_dim, output_dim=output_dim, hidden_layers=[256, 512, 256]).to(device_obj)
+        model = DynamicPINN(input_dim=input_dim, output_dim=output_dim, hidden_layers=[256, 512, 256]).to(device_obj)
         
         # Instanciamos la función de pérdida específica (PINNLoss, EndToEndLoss, etc.)
         criterion = criterion_class(**criterion_kwargs).to(device_obj)
