@@ -61,16 +61,17 @@ class PCAExtractor(BaseExtractor):
         return pesos_raw / self.factor_escala
     
 # =====================================================================
-# --- 2. MÉTODO: LEAST SQUARES (Ajuste Híbrido V2.5) ---
+# --- 2. MÉTODO: LEAST SQUARES (Ajuste Híbrido Dinámico V1 y V2.5) ---
 # =====================================================================
 class LeastSquaresExtractor(BaseExtractor):
     """
-    Motor Atómico V2.5: Ajuste físico estricto.
-    Usa 3 gaussianas ancla (protegiendo quiralidad) y 7 gaussianas libres 
-    distribuidas en zonas estancas, resolviendo con least_squares.
+    Motor Atómico Físico. 
+    Ajusta 3 gaussianas ancla y N gaussianas libres (5 para el Modelo 8G, 7 para el 10G)
+    distribuidas en zonas estancas con semillas optimizadas (Modelo 2).
     """
-    def __init__(self, Omega_lambda=16.7, Omega_A=100.0, n_jobs=14):
+    def __init__(self, n_gaussianas=10, Omega_lambda=16.7, Omega_A=100.0, n_jobs=14):
         super().__init__(n_jobs)
+        self.n_gaussianas = n_gaussianas
         self.Omega_lambda = Omega_lambda
         self.Omega_A = Omega_A
 
@@ -78,35 +79,37 @@ class LeastSquaresExtractor(BaseExtractor):
     def gaussiana(x, A, mu, sigma):
         return A * np.exp(-0.5 * ((x - mu) / sigma)**2)
 
+    # --- Funciones Matemáticas Dinámicas ---
     @staticmethod
-    def suma_3_gaussianas(x, *p):
-        return sum(LeastSquaresExtractor.gaussiana(x, p[i], p[i+1], p[i+2]) for i in range(0, 9, 3))
+    def suma_3_gaussianas(x, *p): return sum(LeastSquaresExtractor.gaussiana(x, p[i], p[i+1], p[i+2]) for i in range(0, 9, 3))
+    
+    @staticmethod
+    def suma_5_gaussianas(x, *p): return sum(LeastSquaresExtractor.gaussiana(x, p[i], p[i+1], p[i+2]) for i in range(0, 15, 3))
+    
+    @staticmethod
+    def suma_7_gaussianas(x, *p): return sum(LeastSquaresExtractor.gaussiana(x, p[i], p[i+1], p[i+2]) for i in range(0, 21, 3))
 
     @staticmethod
-    def suma_7_gaussianas(x, *p):
-        return sum(LeastSquaresExtractor.gaussiana(x, p[i], p[i+1], p[i+2]) for i in range(0, 21, 3))
+    def suma_8_gaussianas(x, *p): return sum(LeastSquaresExtractor.gaussiana(x, p[i], p[i+1], p[i+2]) for i in range(0, 24, 3))
+    
+    @staticmethod
+    def suma_10_gaussianas(x, *p): return sum(LeastSquaresExtractor.gaussiana(x, p[i], p[i+1], p[i+2]) for i in range(0, 30, 3))
 
     @staticmethod
-    def suma_10_gaussianas(x, *p):
-        return sum(LeastSquaresExtractor.gaussiana(x, p[i], p[i+1], p[i+2]) for i in range(0, 30, 3))
-
+    def error_3(p, x, y_target): return LeastSquaresExtractor.suma_3_gaussianas(x, *p) - y_target
     @staticmethod
-    def error_3(p, x, y_target):
-        return LeastSquaresExtractor.suma_3_gaussianas(x, *p) - y_target
-
+    def error_5(p, x, y_target): return LeastSquaresExtractor.suma_5_gaussianas(x, *p) - y_target
     @staticmethod
-    def error_7(p, x, y_target):
-        return LeastSquaresExtractor.suma_7_gaussianas(x, *p) - y_target
-
+    def error_7(p, x, y_target): return LeastSquaresExtractor.suma_7_gaussianas(x, *p) - y_target
     @staticmethod
-    def error_10(p, x, y_target):
-        return LeastSquaresExtractor.suma_10_gaussianas(x, *p) - y_target
+    def error_8(p, x, y_target): return LeastSquaresExtractor.suma_8_gaussianas(x, *p) - y_target
+    @staticmethod
+    def error_10(p, x, y_target): return LeastSquaresExtractor.suma_10_gaussianas(x, *p) - y_target
 
     def _procesar_molecula(self, args):
-        """Lógica interna de ajuste por capas para 1 sola molécula."""
         idx, y_real, p9_inicial, wl_nm = args
         
-        # --- CAPA 1: Ajuste de las 3 Principales ---
+        # --- CAPA 1: Ajuste de las 3 Principales (Anclaje) ---
         x0_3, b_lower_3, b_upper_3 = [], [], []
         for i in range(0, 9, 3):
             A, mu, sig = p9_inicial[i], p9_inicial[i+1], p9_inicial[i+2]
@@ -133,52 +136,69 @@ class LeastSquaresExtractor(BaseExtractor):
         res_3 = least_squares(self.error_3, x0=x0_3, bounds=(b_lower_3, b_upper_3), args=(wl_nm, y_real), max_nfev=2500)
         popt_3 = res_3.x
             
-        # --- CAPA 2: Matching Pursuit Estadístico (Zonas) ---
+        # --- CAPA 2: Matching Pursuit Estadístico (Zonas Dinámicas) ---
         y_parcial_3 = self.suma_3_gaussianas(wl_nm, *popt_3)
         y_residuo = y_real - y_parcial_3
         A_max_permitido = max([abs(popt_3[0]), abs(popt_3[3]), abs(popt_3[6])])
         
-        zonas = [
-            {"mu_start": 177.4, "mu_min": 150.0, "mu_max": 182.9},
-            {"mu_start": 195.2, "mu_min": 183.0, "mu_max": 211.9},
-            {"mu_start": 225.0, "mu_min": 212.0, "mu_max": 239.9},
-            {"mu_start": 270.0, "mu_min": 240.0, "mu_max": 289.9},
-            {"mu_start": 308.0, "mu_min": 290.0, "mu_max": 324.9},
-            {"mu_start": 335.0, "mu_min": 325.0, "mu_max": 369.9},
-            {"mu_start": 405.0, "mu_min": 370.0, "mu_max": 650.0}
-        ]
+        # Selección de Modelo (Zonas y Funciones de Error)
+        if self.n_gaussianas == 8:
+            # MODELO 2: Semillas y Límites optimizados (5 zonas libres, sin solapamiento)
+            zonas = [
+                {"mu_start": 185.0, "mu_min": 150.0, "mu_max": 215.0},
+                {"mu_start": 235.0, "mu_min": 215.1, "mu_max": 275.0},
+                {"mu_start": 305.0, "mu_min": 275.1, "mu_max": 340.0},
+                {"mu_start": 375.0, "mu_min": 340.1, "mu_max": 430.0},
+                {"mu_start": 485.0, "mu_min": 430.1, "mu_max": 650.0}
+            ]
+            error_func_libre = self.error_5
+            error_func_global = self.error_8
+        else:
+            # MODELO V2.5: 7 zonas libres para 10 gaussianas
+            zonas = [
+                {"mu_start": 177.4, "mu_min": 150.0, "mu_max": 182.9},
+                {"mu_start": 195.2, "mu_min": 183.0, "mu_max": 211.9},
+                {"mu_start": 225.0, "mu_min": 212.0, "mu_max": 239.9},
+                {"mu_start": 270.0, "mu_min": 240.0, "mu_max": 289.9},
+                {"mu_start": 308.0, "mu_min": 290.0, "mu_max": 324.9},
+                {"mu_start": 335.0, "mu_min": 325.0, "mu_max": 369.9},
+                {"mu_start": 405.0, "mu_min": 370.0, "mu_max": 650.0}
+            ]
+            error_func_libre = self.error_7
+            error_func_global = self.error_10
         
-        x0_7, b_lower_7, b_upper_7 = [], [], []
+        x0_libres, b_lower_libres, b_upper_libres = [], [], []
         for zona in zonas:
             mu_libre = zona["mu_start"]
             sigma_fisico = np.clip((mu_libre**2 / 1240.0) * 0.2, 2.1, 59.9)
             amp_inicial = np.clip(y_residuo[(np.abs(wl_nm - mu_libre)).argmin()], -A_max_permitido, A_max_permitido)
             sig_max = min(60.0, max(2.5, sigma_fisico * 3.0))
             
-            x0_7.extend([amp_inicial, mu_libre, sigma_fisico])
-            b_lower_7.extend([-A_max_permitido, zona["mu_min"], 2.0])
-            b_upper_7.extend([ A_max_permitido, zona["mu_max"], sig_max])
+            x0_libres.extend([amp_inicial, mu_libre, sigma_fisico])
+            b_lower_libres.extend([-A_max_permitido, zona["mu_min"], 2.0])
+            b_upper_libres.extend([ A_max_permitido, zona["mu_max"], sig_max])
             
-        res_7 = least_squares(self.error_7, x0=x0_7, bounds=(b_lower_7, b_upper_7), args=(wl_nm, y_residuo), max_nfev=2500)
-        popt_7 = res_7.x
+        res_libres = least_squares(error_func_libre, x0=x0_libres, bounds=(b_lower_libres, b_upper_libres), args=(wl_nm, y_residuo), max_nfev=2500)
+        popt_libres = res_libres.x
 
         # --- CAPA 3: Ajuste Global ---
-        x0_10 = np.concatenate((popt_3, popt_7))
-        b_lower_10, b_upper_10 = [], []
+        x0_global = np.concatenate((popt_3, popt_libres))
+        b_lower_global, b_upper_global = [], []
         for i in range(0, 9):
             val = popt_3[i]
             margen = abs(val) * 0.05
-            b_lower_10.append(max(b_lower_3[i], val - margen))
-            b_upper_10.append(min(b_upper_3[i], val + margen))
+            b_lower_global.append(max(b_lower_3[i], val - margen))
+            b_upper_global.append(min(b_upper_3[i], val + margen))
             
-        b_lower_10.extend(b_lower_7)
-        b_upper_10.extend(b_upper_7)
+        b_lower_global.extend(b_lower_libres)
+        b_upper_global.extend(b_upper_libres)
         
-        res_10 = least_squares(self.error_10, x0=x0_10, bounds=(b_lower_10, b_upper_10), args=(wl_nm, y_real), max_nfev=2500)
+        res_global = least_squares(error_func_global, x0=x0_global, bounds=(b_lower_global, b_upper_global), args=(wl_nm, y_real), max_nfev=2500)
         
         # --- POST-PROCESAMIENTO: Zombis y Orden ---
-        params_finales = list(res_10.x)
-        tripletas_libres = [params_finales[i:i+3] for i in range(9, 30, 3)]
+        params_finales = list(res_global.x)
+        num_params_totales = self.n_gaussianas * 3
+        tripletas_libres = [params_finales[i:i+3] for i in range(9, num_params_totales, 3)]
         
         libres_procesadas = []
         for pico in tripletas_libres:
@@ -190,16 +210,10 @@ class LeastSquaresExtractor(BaseExtractor):
         return idx, np.concatenate((np.array(params_finales[0:9]), np.concatenate(libres_ordenadas)))
 
     def fit_transform(self, S_real_matrix, puros_9_params_matrix, wl_nm):
-        """
-        Orquesta el ajuste paralelo para toda la base de datos.
-        S_real_matrix: (N, 100) Espectros continuos.
-        puros_9_params_matrix: (N, 9) Las 3 transiciones ancla.
-        wl_nm: (100,) Malla de longitudes de onda.
-        """
         N_mols = len(S_real_matrix)
-        Y_10_params_final = np.zeros((N_mols, 30))
+        Y_params_final = np.zeros((N_mols, self.n_gaussianas * 3))
         
-        print(f"🚀 Iniciando Least Squares V2.5 en {self.n_jobs} núcleos ({N_mols} moléculas)...")
+        print(f"🚀 Iniciando Least Squares (K={self.n_gaussianas}) en {self.n_jobs} núcleos ({N_mols} moléculas)...")
         tareas = [(idx, S_real_matrix[idx], puros_9_params_matrix[idx], wl_nm) for idx in range(N_mols)]
         
         resultados = Parallel(n_jobs=self.n_jobs, verbose=5)(
@@ -207,10 +221,10 @@ class LeastSquaresExtractor(BaseExtractor):
         )
         
         for idx, params in resultados:
-            Y_10_params_final[idx] = params
+            Y_params_final[idx] = params
             
-        print("✅ Ajuste Híbrido V2.5 completado con éxito.")
-        return Y_10_params_final
+        print(f"✅ Ajuste Físico (K={self.n_gaussianas}) completado con éxito.")
+        return Y_params_final
     # =====================================================================
 # --- 3. MÉTODO: COMPRESIÓN CUÁNTICA (Clustering GMM / Agglomerative) ---
 # =====================================================================

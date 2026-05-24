@@ -33,13 +33,13 @@ class CDDatasetPipeline:
 
         # Crear carpetas si no existen
         os.makedirs(self.processed_dir, exist_ok=True)
-
-    def generar_y_guardar_parametros(self, metodo="gmm", **kwargs):
+def generar_y_guardar_parametros(self, metodo="gmm", n_gaussianas=10, **kwargs):
         """
         Ejecuta el extractor elegido, guarda los parámetros resultantes 
         en la carpeta data/processed/ para que no se pierdan, y los devuelve.
+        Ahora soporta dinámicamente cualquier número de gaussianas.
         """
-        print(f"\n📦 Iniciando pipeline de extracción y guardado físico [Método: {metodo.upper()}]...")
+        print(f"\n📦 Iniciando pipeline de extracción y guardado físico [Método: {metodo.upper()} | K={n_gaussianas}]...")
         
         # 1. Carga básica y alineación de tus dos CSVs originales
         df_100 = pd.read_csv(os.path.join(self.raw_dir, 'Dataset_ECD_100R.csv'), sep=';')
@@ -62,14 +62,16 @@ class CDDatasetPipeline:
         X_raw = df_3[cols_hammett].values.astype(float)[df_3['Molecula'].isin(mols_comunes)]
         
         # 2. Selección del Extractor según tu Plan de Discusión
-        nombre_archivo_salida = f"Y_params_{metodo.lower()}_N10.npy"
+        # EL PARCHE: Nombre dinámico basado en n_gaussianas
+        nombre_archivo_salida = f"Y_params_{metodo.lower()}_N{n_gaussianas}.npy"
         ruta_guardado = os.path.join(self.processed_dir, nombre_archivo_salida)
         
         # Inicializar variables
         Y_params = None
         
         if metodo.lower() in ['gmm', 'agglomerative']:
-            extractor = QuantumClusteringExtractor(algoritmo=metodo, n_jobs=14)
+            # EL PARCHE: Pasamos n_gaussianas como k_clusters
+            extractor = QuantumClusteringExtractor(algoritmo=metodo, k_clusters=n_gaussianas, n_jobs=14)
             Y_params = extractor.fit_transform(wl_matrix, R_matrix)
             
         elif metodo.lower() == 'leastsquares':
@@ -90,7 +92,8 @@ class CDDatasetPipeline:
             from src.data.ground_truth_spectra import generar_envolvente_continua
             S_real_matrix = generar_envolvente_continua(wl_matrix, R_matrix, wl_nm)
             
-            extractor = LeastSquaresExtractor(n_jobs=14)
+            # EL PARCHE: Pasamos n_gaussianas al extractor
+            extractor = LeastSquaresExtractor(n_gaussianas=n_gaussianas, n_jobs=14)
             Y_params = extractor.fit_transform(S_real_matrix, puros_9p, wl_nm)
             
         elif metodo.lower() == 'pca':
