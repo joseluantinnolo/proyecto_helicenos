@@ -26,15 +26,15 @@ from src.evaluate.tables import LaTeXTableGenerator
 # =====================================================================
 CONFIG = {
     # MODO DE EJECUCIÓN: "PREPROCESAR", "OPTIMIZAR", "KFOLD", "ENTRENAR_FINAL", "EVALUAR", "PIPELINE_COMPLETO", "BARRIDO_ALPHA"
-    "MODO": "BARRIDO_ALPHA",  
+    "MODO": "PIPELINE_COMPLETO",  
     
-    # ARQUITECTURA OBJETIVO: "PINN_10G", "PINN_8G", "PINN_3T", "CAJA_NEGRA"
-    "ARQUITECTURA": "PINN_10G",
+    # ARQUITECTURA OBJETIVO: "PINN_10G", "PINN_8G", "PINN_3T", "CAJA_NEGRA", "CAJA_NEGRA_3T"
+    "ARQUITECTURA": "PINN_3T",
     
     # METODO DE EXTRACCIÓN: "gmm", "agglomerative", "leastsquares", "pca"
     "METODO": "leastsquares",
     
-    "MODELO_NOMBRE": "PINN_LeastSquares_10G_Definitivo",
+    "MODELO_NOMBRE": "PINN_LeastSquares_3T_Definitivo",
     "DEVICE": "cuda" if torch.cuda.is_available() else "cpu",
     "N_TRIALS_OPTUNA": 15,
     "MALLA_PUNTOS": 100,
@@ -49,25 +49,34 @@ CONFIG = {
     ]
 }
 
-def cargar_espectros_reales(ruta_csv='data/processed/Dataset_envolventes_100T.csv'):
+def cargar_espectros_reales(ruta_csv):
     if not os.path.exists(ruta_csv): return None
     df = pd.read_csv(ruta_csv)
     cols_y = [c for c in df.columns if c.startswith('Y_')]
     return df[cols_y].values.astype(float)
 
 def configurar_arquitectura():
-    """Configura dinámicamente las clases y variables según la arquitectura elegida."""
+    """Configura dinámicamente las clases, variables y topología de red según la arquitectura."""
     arq = CONFIG["ARQUITECTURA"]
     
-    # ¡NUEVO!: Hemos quitado los máximos fijos. Ahora solo pasamos el número de gaussianas y los pesos (Alpha/Beta).
+    # Parámetros base universales (comunes a todos)
+    base_train = {"lr": 0.001, "epochs": 300, "batch_size": 32}
+    
     if arq == "PINN_10G":
-        return PINNLoss, {"num_gaussianas": 10, "alpha": 0.2, "beta": 0.8}, 10
+        arch_params = {**base_train, "n_layers": 3, "layer_0_size": 256, "layer_1_size": 128, "layer_2_size": 64}
+        return PINNLoss, {"num_gaussianas": 10, "alpha": 0.2, "beta": 0.8}, 10, arch_params
     elif arq == "PINN_8G":
-        return PINNLoss, {"num_gaussianas": 8, "alpha": 0.2, "beta": 0.8}, 8
+        arch_params = {**base_train, "n_layers": 3, "layer_0_size": 256, "layer_1_size": 128, "layer_2_size": 64}
+        return PINNLoss, {"num_gaussianas": 8, "alpha": 0.2, "beta": 0.8}, 8, arch_params
     elif arq == "PINN_3T":
-        return DiscretePINNLoss, {"num_transiciones": 3, "alpha": 0.2, "beta": 0.8}, 3
+        arch_params = {**base_train, "n_layers": 2, "layer_0_size": 128, "layer_1_size": 64}
+        return DiscretePINNLoss, {"num_transiciones": 3, "alpha": 0.2, "beta": 0.8}, 3, arch_params
     elif arq == "CAJA_NEGRA":
-        return EndToEndLoss, {}, None
+        arch_params = {**base_train, "n_layers": 3, "layer_0_size": 256, "layer_1_size": 128, "layer_2_size": 64}
+        return EndToEndLoss, {}, None, arch_params
+    elif arq == "CAJA_NEGRA_3T":
+        arch_params = {**base_train, "n_layers": 3, "layer_0_size": 256, "layer_1_size": 128, "layer_2_size": 64}
+        return EndToEndLoss, {}, None, arch_params
     else:
         raise ValueError(f"Arquitectura {arq} no reconocida.")
 
@@ -80,10 +89,12 @@ def main():
     wl_tensor = torch.tensor(wl_grid, dtype=torch.float32).to(CONFIG['DEVICE'])
     
     # Inyección dinámica de la arquitectura
-    CriterionClass, criterion_kwargs, n_gauss = configurar_arquitectura()
+    CriterionClass, criterion_kwargs, n_gauss, arch_params = configurar_arquitectura()
+    
+    # 🔧 LA BOMBA DESACTIVADA: Asignamos best_params por defecto para que no explote el K-Fold
+    best_params = arch_params.copy() 
     
     X_raw, Y_target, S_true = None, None, None
-    best_params = None
     tabulador = LaTeXTableGenerator(output_dir="reports/tables")
 
     # =====================================================================
@@ -93,11 +104,16 @@ def main():
         pipeline = CDDatasetPipeline(data_dir="data", batch_size=32)
         
         if CONFIG["MODO"] != "EVALUAR":
-            S_true = cargar_espectros_reales()
+            # 🚀 Carga Dinámica de Ground Truth según si es 3T o 100T
+            ruta_csv = 'data/processed/Dataset_envolventes_3T.csv' if "3T" in CONFIG["ARQUITECTURA"] else 'data/processed/Dataset_envolventes_100T.csv'
+            S_true = cargar_espectros_reales(ruta_csv)
             
-            if CONFIG["ARQUITECTURA"] == "CAJA_NEGRA":
-                X_raw, _ = pipeline.generar_y_guardar_parametros(metodo="pca") 
+            # 🚀 EL ENRUTADOR SEGURO (Añadido PINN_3T)
+            if "CAJA_NEGRA" in CONFIG["ARQUITECTURA"]:
+                X_raw, _ = pipeline.generar_y_guardar_parametros(metodo="caja_negra") 
                 Y_target = S_true
+            elif CONFIG["ARQUITECTURA"] == "PINN_3T":
+                X_raw, Y_target = pipeline.generar_y_guardar_parametros(metodo="exact_3t", n_gaussianas=3)
             else:
                 X_raw, Y_target = pipeline.generar_y_guardar_parametros(
                     metodo=CONFIG['METODO'], 
@@ -115,16 +131,13 @@ def main():
                 
         if CONFIG["MODO"] == "PREPROCESAR": return
 
-        # 🚀 ¡EL NÚCLEO DE LA SOLUCIÓN GLOBAL! 🚀
-        # Generamos los loaders Y el Pasaporte Físico al mismo tiempo.
-        metodo_dl = "caja_negra" if CONFIG["ARQUITECTURA"] == "CAJA_NEGRA" else CONFIG["METODO"]
+        # 🚀 ASIGNACIÓN DE METODO_DL (Añadido PINN_3T)
+        metodo_dl = "caja_negra" if "CAJA_NEGRA" in CONFIG["ARQUITECTURA"] else ("exact_3t" if CONFIG["ARQUITECTURA"] == "PINN_3T" else CONFIG["METODO"])
         
         tr_loader, va_loader, passport = pipeline.construir_loaders(
             X_raw, Y_target, S_true, metodo=metodo_dl, split_ratio=0.8
         )
         
-        # Inyectamos el pasaporte en los argumentos de la función de pérdida.
-        # Ahora PINNLoss recibirá a_max, mu_min, mu_max directamente de la realidad de los datos.
         criterion_kwargs.update(passport)
 
     # =====================================================================
@@ -132,7 +145,6 @@ def main():
     # =====================================================================
     if CONFIG["MODO"] == "BARRIDO_ALPHA":
         from src.train.sweep_alpha import ejecutar_barrido_alpha
-        
         ejecutar_barrido_alpha(
             train_loader=tr_loader, val_loader=va_loader, 
             wl_grid=wl_grid, input_dim=X_raw.shape[1], output_dim=Y_target.shape[1],
@@ -142,9 +154,9 @@ def main():
         return 
 
     # =====================================================================
-    # FASE 2: OPTIMIZACIÓN BAYESIANA (OPTUNA)
+    # FASE 2: OPTIMIZACIÓN BAYESIANA (OPTUNA - Solo manual)
     # =====================================================================
-    if CONFIG["MODO"] in ["OPTIMIZAR", "PIPELINE_COMPLETO"]:
+    if CONFIG["MODO"] == "OPTIMIZAR":
         optimizador = PINNOptimizer(
             train_loader=tr_loader, val_loader=va_loader, wl_real_t=wl_tensor, 
             criterion_class=CriterionClass, criterion_kwargs=criterion_kwargs,
@@ -152,17 +164,12 @@ def main():
         )
         best_params = optimizador.run_study(n_trials=CONFIG['N_TRIALS_OPTUNA'])
         tabulador.generar_tabla_hiperparametros(best_params, CONFIG['MODELO_NOMBRE'])
-        
-        if CONFIG["MODO"] == "OPTIMIZAR": return
-            
-    if best_params is None:
-        best_params = {"lr": 0.001, "epochs": 300, "n_layers": 3, "layer_0_size": 256, "batch_size": 32}
+        return  
 
     # =====================================================================
     # FASE 3: VALIDACIÓN CRUZADA (K-FOLD)
     # =====================================================================
     if CONFIG["MODO"] in ["KFOLD", "PIPELINE_COMPLETO"]:
-        # Truco PyTorch: Pedimos un loader con el 100% de los datos para extraer los tensores ya escalados con la física correcta
         full_loader, _, _ = pipeline.construir_loaders(X_raw, Y_target, S_true, metodo=metodo_dl, split_ratio=1.0)
         X_scaled, Y_scaled, S_scaled = full_loader.dataset.tensors
         
@@ -198,8 +205,8 @@ def main():
         print("\n[FASE 5] Generando evaluación de dominio y atlas visual multimodelo...")
         from src.evaluate.evaluate_all import ejecutar_evaluacion_comparativa
         
-        S_true_3T = cargar_espectros_reales(ruta_csv='data/processed/Dataset_envolventes_3T.csv')
-        S_true_100T = cargar_espectros_reales(ruta_csv='data/processed/Dataset_envolventes_100T.csv')
+        S_true_3T = cargar_espectros_reales('data/processed/Dataset_envolventes_3T.csv')
+        S_true_100T = cargar_espectros_reales('data/processed/Dataset_envolventes_100T.csv')
         
         if S_true_3T is not None and S_true_100T is not None:
             ejecutar_evaluacion_comparativa(

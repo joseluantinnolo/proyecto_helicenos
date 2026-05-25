@@ -38,23 +38,26 @@ class CDDatasetPipeline:
             Y_params = np.load(ruta_guardado)
             return X_raw, Y_params
 
-        # 1. Carga básica y alineación
+        # 1. Carga básica, ORDENACIÓN SEGURA y alineación
         df_100 = pd.read_csv(os.path.join(self.raw_dir, 'Dataset_ECD_100R.csv'), sep=';')
         df_3 = pd.read_csv(os.path.join(self.raw_dir, 'DatasetDefinitivo_2310indep.csv'), sep=',')
         
-        df_100 = df_100.drop_duplicates(subset=['Molecula']).reset_index(drop=True)
-        df_3 = df_3.drop_duplicates(subset=['Molecula']).reset_index(drop=True)
+        df_100 = df_100.drop_duplicates(subset=['Molecula'])
+        df_3 = df_3.drop_duplicates(subset=['Molecula'])
         
-        mols_comunes = set(df_100['Molecula']).intersection(set(df_3['Molecula']))
-        mascara = df_100['Molecula'].isin(mols_comunes)
+        mols_comunes = list(set(df_100['Molecula']).intersection(set(df_3['Molecula'])))
+        
+        # ⚠️ EL BLINDAJE: Filtramos y ordenamos por la columna 'Molecula' para asegurar alineación 1:1
+        df_100 = df_100[df_100['Molecula'].isin(mols_comunes)].sort_values('Molecula').reset_index(drop=True)
+        df_3 = df_3[df_3['Molecula'].isin(mols_comunes)].sort_values('Molecula').reset_index(drop=True)
         
         cols_wl = [f'nm_{i}' for i in range(1, 101)]
         cols_R = [f'R_{i}' for i in range(1, 101)]
-        wl_matrix = df_100[cols_wl].values.astype(float)[mascara]
-        R_matrix = df_100[cols_R].values.astype(float)[mascara]
+        wl_matrix = df_100[cols_wl].values.astype(float)
+        R_matrix = df_100[cols_R].values.astype(float)
         
         cols_hammett = [c for c in df_3.columns if c.startswith('Pos_')]
-        X_raw = df_3[cols_hammett].values.astype(float)[df_3['Molecula'].isin(mols_comunes)]
+        X_raw = df_3[cols_hammett].values.astype(float)
         
         Y_params = None
         
@@ -64,7 +67,7 @@ class CDDatasetPipeline:
             
         elif metodo.lower() == 'leastsquares':
             cols_ancla = ['Rmax', 'nm_Rmax', 'Rmin', 'nm_Rmin', 'R1', 'nm_R1'] 
-            puros_6p = df_3[cols_ancla].values.astype(float)[df_3['Molecula'].isin(mols_comunes)]
+            puros_6p = df_3[cols_ancla].values.astype(float)
             puros_9p = np.zeros((len(puros_6p), 9))
             puros_9p[:, 0:6] = puros_6p 
             puros_9p[:, 6] = puros_6p[:, 4] * 0.5 
@@ -77,6 +80,12 @@ class CDDatasetPipeline:
             
             extractor = LeastSquaresExtractor(n_gaussianas=n_gaussianas, n_jobs=14)
             Y_params = extractor.fit_transform(S_real_matrix, puros_9p, wl_nm)
+            
+        elif metodo.lower() == 'exact_3t':
+            # Extracción directa y blindada del CSV para el modelo 3T
+            cols_ancla = ['nm_R1', 'R1', 'nm_Rmax', 'Rmax', 'nm_Rmin', 'Rmin'] 
+            Y_params = df_3[cols_ancla].values.astype(float)
+            ruta_guardado = os.path.join(self.processed_dir, "Y_params_exact_3t.npy")
             
         elif metodo.lower() == 'pca':
             wl_nm = np.linspace(150, 600, 100)
@@ -103,7 +112,8 @@ class CDDatasetPipeline:
         """Genera el diccionario de escalas físicas globales para la función de pérdida."""
         passport = {'metodo': metodo.lower()}
         
-        if metodo.lower() in ['gmm', 'leastsquares', 'agglomerative']: 
+        # ⚠️ Añadido exact_3t a la lista de métodos
+        if metodo.lower() in ['gmm', 'leastsquares', 'agglomerative', 'exact_3t']: 
             y_dim = Y.shape[1]
             is_3t = (y_dim == 6)
             paso = 2 if is_3t else 3
@@ -146,7 +156,9 @@ class CDDatasetPipeline:
 
         # 3. Normalizar Y (y S_true) usando el pasaporte
         Y_norm = Y.copy()
-        if metodo.lower() in ['gmm', 'leastsquares', 'agglomerative']:
+        
+        # ⚠️ Añadido exact_3t a la lista de métodos
+        if metodo.lower() in ['gmm', 'leastsquares', 'agglomerative', 'exact_3t']:
             is_3t = (Y.shape[1] == 6)
             paso = 2 if is_3t else 3
             A_cols = [1, 3, 5] if is_3t else [i for i in range(0, Y.shape[1], paso)]
@@ -176,12 +188,18 @@ class CDDatasetPipeline:
         np.random.shuffle(indices)
         idx_train, idx_val = indices[:split_idx], indices[split_idx:]
 
+        # 4. Normalización segura de X
         X_tr_sc = self.scaler_X.fit_transform(X[idx_train])
-        X_va_sc = self.scaler_X.transform(X[idx_val])
-
+        
         # 5. Tensores
         def to_tensor(arr): return torch.tensor(arr, dtype=torch.float32)
         train_ds = TensorDataset(to_tensor(X_tr_sc), to_tensor(Y_norm[idx_train]), to_tensor(S_norm[idx_train]))
-        val_ds = TensorDataset(to_tensor(X_va_sc), to_tensor(Y_norm[idx_val]), to_tensor(S_norm[idx_val]))
+        train_loader = DataLoader(train_ds, batch_size=self.batch_size, shuffle=True)
+
+        val_loader = None
+        if len(idx_val) > 0:
+            X_va_sc = self.scaler_X.transform(X[idx_val])
+            val_ds = TensorDataset(to_tensor(X_va_sc), to_tensor(Y_norm[idx_val]), to_tensor(S_norm[idx_val]))
+            val_loader = DataLoader(val_ds, batch_size=self.batch_size, shuffle=False)
         
-        return DataLoader(train_ds, batch_size=self.batch_size, shuffle=True), DataLoader(val_ds, batch_size=self.batch_size, shuffle=False), passport
+        return train_loader, val_loader, passport
