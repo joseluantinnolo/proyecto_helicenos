@@ -46,15 +46,15 @@ def ejecutar_barrido_alpha(train_loader, val_loader, wl_grid, input_dim, output_
     resultados_barrido = []
     alphas = [round(a, 1) for a in np.arange(1.0, -0.1, -0.1)]
     
-    # Extraemos matrices completas de validación para evaluar al final
-    bX_val, _, bYs_val = val_loader.dataset.tensors
-    S_true_val = bYs_val.numpy()
+    # Extraemos matrices completas de validación (X, Y_norm, S_norm)
+    bX_val, bY_val, bS_val = val_loader.dataset.tensors
+    S_true_norm = bS_val.numpy() # Ahora sabemos que esto viene normalizado desde el dataloader
 
     for alpha in alphas:
         beta = round(1.0 - alpha, 1)
         print(f"\n⚙️ ENTRENANDO: Alpha (Params)={alpha} | Beta (Espectro)={beta}")
         
-        # 1. Configurar Pérdida y Modelo (Igual que tu cuaderno)
+        # 1. Configurar Pérdida y Modelo
         kwargs = criterion_kwargs_base.copy()
         kwargs['alpha'] = alpha
         kwargs['beta'] = beta
@@ -66,7 +66,7 @@ def ejecutar_barrido_alpha(train_loader, val_loader, wl_grid, input_dim, output_
             n_layers=3, layer_0_size=128, layer_1_size=64, layer_2_size=32
         ).to(device)
         
-        # 2. Entrenar (Limitado a 150 épocas para el barrido para ir rápido, ajustable)
+        # 2. Entrenar (Limitado a 150 épocas)
         start_time = time.time()
         modelo_entrenado, _ = train_pinn_model(
             model=model, train_loader=train_loader, val_loader=val_loader,
@@ -80,14 +80,14 @@ def ejecutar_barrido_alpha(train_loader, val_loader, wl_grid, input_dim, output_
         modelo_entrenado.eval()
         with torch.no_grad():
             pred_norm = modelo_entrenado(bX_val.to(device))
-            # Usamos la función interna de la pérdida para reconstruir el espectro físico
             S_pred_norm = criterion.build_spectrum(pred_norm, wl_tensor)
             
-            # Desescalamos a intensidad real (multiplicando por a_max o r_max)
+            # ¡LA CLAVE! Desescalamos AMBAS matrices a intensidad real para las métricas
             escala = kwargs.get('a_max', kwargs.get('r_max', 100.0))
             S_pred_real = (S_pred_norm * escala).cpu().numpy()
+            S_true_real = S_true_norm * escala 
             
-        metricas = evaluate_physical_metrics(S_true_val, S_pred_real, wl_grid)
+        metricas = evaluate_physical_metrics(S_true_real, S_pred_real, wl_grid)
         
         resultados_barrido.append({
             'Alpha_Params': alpha, 'Beta_Espectro': beta, 
@@ -96,24 +96,22 @@ def ejecutar_barrido_alpha(train_loader, val_loader, wl_grid, input_dim, output_
         print(f"✅ Iteración completada. Coseno obtenido: {metricas['Coseno_Medio']:.4f}")
 
     # =========================================================
-    # GUARDADO DE DATOS Y GRÁFICAS (Tus gráficas exactas)
+    # GUARDADO DE DATOS Y GRÁFICAS
     # =========================================================
     os.makedirs("reports/analisis_extra", exist_ok=True)
     df = pd.DataFrame(resultados_barrido)
     df.to_csv('reports/analisis_extra/barrido_alpha_beta.csv', index=False)
     
-    # Imprimir LaTeX
     print("\n📄 CÓDIGO LATEX DE LA TABLA (Listo para Overleaf)")
     print(df.to_latex(index=False, float_format="%.4f"))
     
-    # Dibujar la figura 2x2
     sns.set_theme(style="whitegrid")
     plt.rcParams.update({'font.size': 12, 'axes.labelsize': 12, 'axes.titlesize': 14})
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     fig.suptitle('Evolución de las Métricas vs. Peso de la Función de Pérdida', fontsize=18, fontweight='bold', y=1.02)
 
     metricas_plot = [
-        {'columna': 'R2', 'ax': axes[0, 0], 'titulo': 'Coeficiente de Determinación ($R^2$)', 'color': '#1f77b4', 'mejor': 'arriba'},
+        {'columna': 'R2', 'ax': axes[0, 0], 'titulo': 'Coeficiente de Determinación (R2)', 'color': '#1f77b4', 'mejor': 'arriba'},
         {'columna': 'Coseno_Medio', 'ax': axes[0, 1], 'titulo': 'Similitud del Coseno Media', 'color': '#2ca02c', 'mejor': 'arriba'},
         {'columna': 'MAE', 'ax': axes[1, 0], 'titulo': 'Error Absoluto Medio (MAE)', 'color': '#d62728', 'mejor': 'abajo'},
         {'columna': 'Integral_Error_Media', 'ax': axes[1, 1], 'titulo': 'Dif. Absoluta Integrada (IAD)', 'color': '#9467bd', 'mejor': 'abajo'}
@@ -124,7 +122,7 @@ def ejecutar_barrido_alpha(train_loader, val_loader, wl_grid, input_dim, output_
         ax.plot(df['Alpha_Params'], df[m['columna']], marker='o', linewidth=2, markersize=8, color=m['color'])
         ax.set_xlim(1.05, -0.05)
         ax.set_title(m['titulo'], fontweight='bold')
-        ax.set_xlabel('Peso de los Parámetros ($\\alpha$) $\\rightarrow$ Mayor peso al espectro')
+        ax.set_xlabel('Peso de los Parámetros (Alpha) -> Mayor peso al espectro')
         ax.set_ylabel('Valor de la métrica')
         ax.axvspan(0.25, 0.05, color='gold', alpha=0.2, label='Zona Óptima')
         
